@@ -1,43 +1,33 @@
 import logging
 import azure.functions as func
-import base64
 import numpy as np
 import cv2
-import io
 import onnxruntime as ort
+import os 
+
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request.')
     dim_onnx = (800,600) # (width, height) of the model input
-    img_base64 = req.params.get('img')
-    if not img_base64:
-        try:
-            req_body = req.get_json()
-        except ValueError:
-            pass
-        else:
-            img_base64 = req_body.get('img')
-
-    # get bytearray from request 
-    img_byte_arr = req.get_body()
-    # decode image as bytearray to get numpy array
-    img = np.frombuffer(img_byte_arr, dtype=np.uint8)
-    img = cv2.imdecode(img, cv2.IMREAD_COLOR)
-    img = cv2.resize(img, dim_onnx)
+    base_path = "FELObjecDetectionHttpTrigger"
+    labels = load_labels(os.path.join(base_path, 'FEL_classes.txt'))
+    model_path = os.path.join(base_path, 'model_keen_frog_ysrb24zd.onnx')
     
+    # check content type is "image/jpeg" or "image/png"
+    content_type = req.headers.get('content-type')
+    if content_type == 'image/jpeg' or content_type == 'image/png':
+        img_data = req.get_body()
 
-    if img_base64:
-        img = decode_base64(img_base64, dim_onnx)
-        model_path = 'FELObjecDetectionHttpTrigger\model_keen_frog_ysrb24zd.onnx'
+    if img_data:    
+        img = decode_byte_arr(img_data, dim_onnx)
         outputs = run_model(model_path, img)
-
-        return func.HttpResponse(f"The output: {map_outputs(outputs,dim_onnx)}")
+        return func.HttpResponse(f"The output: {map_outputs(outputs,dim_onnx,labels)}")
     else:
         return func.HttpResponse(
-             "This HTTP triggered function executed successfully. Pass a img_base64 in the query string or in the request body for a personalized response.",
-             status_code=200
-        )
+                "This HTTP triggered function executed successfully. Pass a byte array image representation or json object containing 'img' in the query string or in the request body for a personalized response.",
+                status_code=200)
+
 
 def preprocess(img_data):
     mean_vec = np.array([0.485, 0.456, 0.406])
@@ -48,16 +38,15 @@ def preprocess(img_data):
         norm_img_data[i,:,:] = (img_data[i,:,:]/255 - mean_vec[i]) / stddev_vec[i]
     return norm_img_data
 
-# decode base64 image
-def decode_base64(data, dim_onnx):
-    img = base64.b64decode(data)
-    img = np.fromstring(img, np.uint8)
-    img = cv2.imdecode(img, cv2.IMREAD_COLOR)
-    img = cv2.resize(img, dim_onnx)
-    img = img.transpose((2,0,1))
-    img = img.reshape(1, 3, dim_onnx[0], dim_onnx[1])
+# decode image
+def decode_byte_arr(img_byte_arr, dim_onnx):
+    img = np.frombuffer(img_byte_arr, dtype=np.uint8)
+    img = cv2.imdecode(img, cv2.IMREAD_COLOR) # BGR
+    img = cv2.resize(img, dim_onnx) # HWC
+    img = img.transpose((2,0,1)) # HWC to CHW
+    img = img.reshape(1, 3, dim_onnx[0], dim_onnx[1]) # add batch dimension
     img = preprocess(img)
-    img = img.reshape(1, 3, dim_onnx[1], dim_onnx[0])
+    img = img.reshape(1, 3, dim_onnx[1], dim_onnx[0]) # B C H W
     return img
 
 # run model on image
@@ -90,7 +79,7 @@ def get_box_dims(image_shape, box):
     return box_dims
 
 # map mobilenet outputs to classes
-def map_outputs(outputs, dim_onnx):
+def map_outputs(outputs, dim_onnx, labels):
     """
     outputs: list of 3 arrays: boxes, classes, scores
     dim_onnx: tuple of (width, height) of the model input
@@ -98,7 +87,6 @@ def map_outputs(outputs, dim_onnx):
         - filename: string
         - boxes: list of dicts with keys "box", "label", "score"
     """
-    labels = load_labels('./FELObjecDetectionHttpTrigger/FEL_classes.txt')
     # map classes to label strings
     boxes = outputs[0]
     classes = outputs[1]
@@ -109,8 +97,6 @@ def map_outputs(outputs, dim_onnx):
     for i in range(len(boxes)):
         box_raw = boxes[i]
         box = get_box_dims(dim_onnx, box_raw)
-        #box = {"topX": box["topX"], "topY": box["topY"], "bottomX": box["bottomX"], "bottomY": box["bottomY"]}
-
         output["boxes"].append({"box": box, "label": pred_labels[i], "score": scores[i]})
 
     return output
