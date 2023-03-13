@@ -19,6 +19,14 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         else:
             img_base64 = req_body.get('img')
 
+    # get bytearray from request 
+    img_byte_arr = req.get_body()
+    # decode image as bytearray to get numpy array
+    img = np.frombuffer(img_byte_arr, dtype=np.uint8)
+    img = cv2.imdecode(img, cv2.IMREAD_COLOR)
+    img = cv2.resize(img, dim_onnx)
+    
+
     if img_base64:
         img = decode_base64(img_base64, dim_onnx)
         model_path = 'FELObjecDetectionHttpTrigger\model_keen_frog_ysrb24zd.onnx'
