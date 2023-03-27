@@ -9,19 +9,17 @@ import os
     This function is a HTTP trigger function that takes an image as input and returns the output of the model.
     The model is a trained object detection model in ONNX format.
     The model is loaded in the init() function and is reused for each invocation of the function.
-    The function is triggered by a HTTP POST request.
-    The function expects the image to be passed as a byte array in the request body.
+    The function is triggered by a HTTP POST request and expects the image to be passed as a byte array in the request body.
     The function returns the output as expected by the frontend:
          a dict with a value "boxes" that contains list of dicts with keys "box", "label", "score"
 '''
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request.')
     dim_onnx = (800,600) # (width, height) of the model input
-    base_path = "FELObjecDetectionHttpTrigger"
-    labels = load_labels(os.path.join(base_path, 'FEL_classes.txt'))
-    model_path = os.path.join(base_path, 'model_keen_frog_ysrb24zd.onnx')
+    base_path = "FELObjecDetectionHttpTrigger" 
+    labels = load_labels(os.path.join(base_path, 'FEL_classes.txt')) # load labels
+    model_path = os.path.join(base_path, 'model_keen_frog_ysrb24zd.onnx') # load model
     
-    # check content type is "image/jpeg" or "image/png"
     img_data = None
     content_type = req.headers.get('content-type')
     if content_type == 'image/jpeg' or content_type == 'image/png':
@@ -42,11 +40,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
 
 def preprocess(img_data):
-    """ Preprocess the image data in the same way the original training data was preprocessed.
+    ''' Preprocess the image data in the same way the original training data was preprocessed.
     Use Imagenet mean and standard deviation.
     :param img_data: The image data to be preprocessed.  (channel, height, width)
     :return: The preprocessed image data - (channel, height, width)
-    """
+    '''
     mean_vec = np.array([0.485, 0.456, 0.406])
     stddev_vec = np.array([0.229, 0.224, 0.225])
     norm_img_data = np.zeros(img_data.shape).astype('float32')
@@ -57,11 +55,11 @@ def preprocess(img_data):
 
 # decode image
 def decode_byte_arr(img_byte_arr, dim_onnx):
-    """ Decode byte array of image and preprocess (normalize) it for model input
+    ''' Decode byte array of image and preprocess (normalize) it for model input
     img_byte_arr: byte array of image
     dim_onnx: tuple of (width, height) of the model input
     return img: numpy array of image
-    """
+    '''
     img = np.frombuffer(img_byte_arr, dtype=np.uint8)
     img = cv2.imdecode(img, cv2.IMREAD_COLOR) # BGR
     img = cv2.resize(img, dim_onnx) # HWC
@@ -73,11 +71,11 @@ def decode_byte_arr(img_byte_arr, dim_onnx):
 
 # run model on image
 def run_model(model_path, img):
-    """ Run ONNX model on image
+    ''' Run ONNX model on image
     model_path: path to model
     img: numpy array of image
     return outputs: list of 3 arrays: boxes, classes, scores
-    """
+    '''
     ort_sess = ort.InferenceSession(model_path)
     inputs = ort_sess.get_inputs()[0].name
     outputs = ort_sess.run(None, {inputs: img})
@@ -85,10 +83,10 @@ def run_model(model_path, img):
 
 #load text file as list
 def load_labels(path):
-    """ Loads labels file. Supports files with or without index numbers.
+    ''' Loads labels file. Supports files with or without index numbers.
     :param path: path to labels file
     :return: a list of labels
-    """
+    '''
     labels = []
     with open(path, 'r') as f:
         for line in f:
@@ -97,11 +95,11 @@ def load_labels(path):
 
 
 def get_box_dims(image_shape, box):
-    """ Convert box coordinates from model output to normalized values
+    ''' Convert box coordinates from model output to normalized values
     image_shape: tuple of (width, height) of the model input
     box: array of 4 values: topX, topY, bottomX, bottomY
     return box_dims: dict with keys "topX", "topY", "bottomX", "bottomY"
-    """
+    '''
     box_keys = ['topX', 'topY', 'bottomX', 'bottomY']
     width, height = image_shape[0], image_shape[1]
 
@@ -116,13 +114,13 @@ def get_box_dims(image_shape, box):
 
 # map mobilenet outputs to classes
 def map_outputs(outputs, dim_onnx, labels):
-    """ Map model outputs to classes and box dimensions (output format used by the frontend)
+    ''' Map model outputs to classes and box dimensions (output format used by the frontend)
     outputs: list of 3 arrays: boxes, classes, scores
     dim_onnx: tuple of (width, height) of the model input
     return output; dict with keys "filename", "boxes"
         - filename: string
         - boxes: list of dicts with keys "box", "label", "score"
-    """
+    '''
     # map classes to label strings
     boxes = outputs[0]
     classes = outputs[1]
