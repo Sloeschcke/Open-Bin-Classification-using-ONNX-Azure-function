@@ -5,35 +5,30 @@ import cv2
 import onnxruntime as ort
 import os 
 
-''' 
-    This function is a HTTP trigger function that takes an image as input and returns the output of the model.
-    The model is a trained object detection model in ONNX format.
-    The model is loaded in the init() function and is reused for each invocation of the function.
-    The function is triggered by a HTTP POST request.
-    The function expects the image to be passed as a byte array in the request body.
-    The function returns the output as expected by the frontend:
-         a dict with a value "boxes" that contains list of dicts with keys "box", "label", "score"
-'''
+
+
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request.')
-    dim_onnx = (800,600) # (width, height) of the model input
+    # dim_onnx = (800,600) # (width, height) of the model input
+    dim_onnx = (640,640) # (width, height) of the model input
     base_path = "FELObjecDetectionHttpTrigger"
     labels = load_labels(os.path.join(base_path, 'FEL_classes.txt'))
-    model_path = os.path.join(base_path, 'model_keen_frog_ysrb24zd.onnx')
+    # model_path = os.path.join(base_path, 'model_keen_frog_ysrb24zd.onnx')
+    use_yolo = False
+    if use_yolo:
+        dim_onnx = (640,640) # (width, height) of the model input
+        model_path = os.path.join(base_path, 'yolov5_model_strong_street_sv6ydlxm.onnx')
     
     # check content type is "image/jpeg" or "image/png"
-    img_data = None
     content_type = req.headers.get('content-type')
     if content_type == 'image/jpeg' or content_type == 'image/png':
         img_data = req.get_body()
-    elif 'content-type' not in req.headers:
-        return func.HttpResponse(
-            "Bad Request: content-type header is missing from the request",
-            status_code=400)
-
     if img_data:    
-        img = decode_byte_arr(img_data, dim_onnx)
+        img, org_image_width, org_image_height = decode_byte_arr(img_data, dim_onnx, do_preprocess=not use_yolo)
         outputs = run_model(model_path, img)
+        if use_yolo:
+            outputs = unwrap_detection_yolo(outputs[0][0], org_image_width, org_image_height)
+            return func.HttpResponse(f"The output: {outputs}")
         return func.HttpResponse(f"The output: {map_outputs(outputs,dim_onnx,labels)}")
     else:
         return func.HttpResponse(
@@ -42,11 +37,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
 
 def preprocess(img_data):
-    """ Preprocess the image data in the same way the original training data was preprocessed.
-    Use Imagenet mean and standard deviation.
-    :param img_data: The image data to be preprocessed.  (channel, height, width)
-    :return: The preprocessed image data - (channel, height, width)
-    """
     mean_vec = np.array([0.485, 0.456, 0.406])
     stddev_vec = np.array([0.229, 0.224, 0.225])
     norm_img_data = np.zeros(img_data.shape).astype('float32')
@@ -55,29 +45,31 @@ def preprocess(img_data):
         norm_img_data[i,:,:] = (img_data[i,:,:]/255 - mean_vec[i]) / stddev_vec[i]
     return norm_img_data
 
+def zero_one_rescale(img_data):
+    img_data = np.ascontiguousarray(img_data, dtype=np.float32)  # uint8 to float32 
+    min_val = np.min(img_data)
+    max_val = np.max(img_data)
+    img_data = (img_data - min_val)/(max_val - min_val)
+    return img_data
+
 # decode image
-def decode_byte_arr(img_byte_arr, dim_onnx):
-    """ Decode byte array of image and preprocess (normalize) it for model input
-    img_byte_arr: byte array of image
-    dim_onnx: tuple of (width, height) of the model input
-    return img: numpy array of image
-    """
+def decode_byte_arr(img_byte_arr, dim_onnx, do_preprocess=True):
     img = np.frombuffer(img_byte_arr, dtype=np.uint8)
     img = cv2.imdecode(img, cv2.IMREAD_COLOR) # BGR
+    # input size
+    org_image_width, org_image_height = img.shape[1], img.shape[0]
     img = cv2.resize(img, dim_onnx) # HWC
     img = img.transpose((2,0,1)) # HWC to CHW
     img = img.reshape(1, 3, dim_onnx[0], dim_onnx[1]) # add batch dimension
-    img = preprocess(img)
+    if do_preprocess:
+        img = preprocess(img)
+    else:
+        img = zero_one_rescale(img)
     img = img.reshape(1, 3, dim_onnx[1], dim_onnx[0]) # B C H W
-    return img
+    return img, org_image_width, org_image_height
 
 # run model on image
 def run_model(model_path, img):
-    """ Run ONNX model on image
-    model_path: path to model
-    img: numpy array of image
-    return outputs: list of 3 arrays: boxes, classes, scores
-    """
     ort_sess = ort.InferenceSession(model_path)
     inputs = ort_sess.get_inputs()[0].name
     outputs = ort_sess.run(None, {inputs: img})
@@ -85,10 +77,6 @@ def run_model(model_path, img):
 
 #load text file as list
 def load_labels(path):
-    """ Loads labels file. Supports files with or without index numbers.
-    :param path: path to labels file
-    :return: a list of labels
-    """
     labels = []
     with open(path, 'r') as f:
         for line in f:
@@ -97,11 +85,6 @@ def load_labels(path):
 
 
 def get_box_dims(image_shape, box):
-    """ Convert box coordinates from model output to normalized values
-    image_shape: tuple of (width, height) of the model input
-    box: array of 4 values: topX, topY, bottomX, bottomY
-    return box_dims: dict with keys "topX", "topY", "bottomX", "bottomY"
-    """
     box_keys = ['topX', 'topY', 'bottomX', 'bottomY']
     width, height = image_shape[0], image_shape[1]
 
@@ -114,9 +97,12 @@ def get_box_dims(image_shape, box):
 
     return box_dims
 
+
+
+
 # map mobilenet outputs to classes
 def map_outputs(outputs, dim_onnx, labels):
-    """ Map model outputs to classes and box dimensions (output format used by the frontend)
+    """
     outputs: list of 3 arrays: boxes, classes, scores
     dim_onnx: tuple of (width, height) of the model input
     return output; dict with keys "filename", "boxes"
@@ -136,3 +122,38 @@ def map_outputs(outputs, dim_onnx, labels):
         output["boxes"].append({"box": box, "label": pred_labels[i], "score": scores[i]})
 
     return output
+
+
+def unwrap_detection_yolo(output_data, image_width, image_height ):
+    class_ids = []
+    confidences = []
+    boxes = []
+
+    rows = output_data.shape[0]
+
+    x_factor = image_width / 640
+    y_factor =  image_height / 640
+
+    for r in range(rows):
+        row = output_data[r]
+        confidence = row[4]
+        if confidence >= 0.2:
+
+            classes_scores = row[5:]
+            _, _, _, max_indx = cv2.minMaxLoc(classes_scores)
+            class_id = max_indx[1]
+            if (classes_scores[class_id] > .25):
+
+                confidences.append(confidence)
+
+                class_ids.append(class_id)
+
+                x, y, w, h = row[0].item(), row[1].item(), row[2].item(), row[3].item() 
+                left = int((x - 0.5 * w) * x_factor)
+                top = int((y - 0.5 * h) * y_factor)
+                width = int(w * x_factor)
+                height = int(h * y_factor)
+                box = np.array([left, top, width, height])
+                boxes.append(box)
+
+    return class_ids, confidences, boxes
